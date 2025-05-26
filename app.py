@@ -2,36 +2,40 @@ import os
 import logging
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
-from datetime import datetime
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.orm import DeclarativeBase
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 
+class Base(DeclarativeBase):
+    pass
+
+db = SQLAlchemy(model_class=Base)
+
 # Create the Flask app
 app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", "dev-secret-key")
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+
+# Configure the database
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL")
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_recycle": 300,
+    "pool_pre_ping": True,
+}
+
+# Initialize the app with the extension
+db.init_app(app)
 
 # Enable CORS for API endpoints
 CORS(app)
 
-# In-memory storage for todos
-todos = []
-todo_counter = 1
-
-class Todo:
-    def __init__(self, id, text, completed=False):
-        self.id = id
-        self.text = text
-        self.completed = completed
-        self.created_at = datetime.now().isoformat()
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'text': self.text,
-            'completed': self.completed,
-            'created_at': self.created_at
-        }
+# Import models and create tables
+with app.app_context():
+    from models import Todo
+    db.create_all()
 
 @app.route('/')
 def index():
@@ -42,6 +46,8 @@ def index():
 def get_todos():
     """Get all todos"""
     try:
+        from models import Todo
+        todos = Todo.query.order_by(Todo.created_at.desc()).all()
         return jsonify({
             'success': True,
             'todos': [todo.to_dict() for todo in todos]
@@ -57,6 +63,7 @@ def get_todos():
 def create_todo():
     """Create a new todo"""
     try:
+        from models import Todo
         data = request.get_json()
         
         if not data or not data.get('text', '').strip():
@@ -65,10 +72,9 @@ def create_todo():
                 'error': 'Todo text is required and cannot be empty'
             }), 400
         
-        global todo_counter
-        new_todo = Todo(todo_counter, data['text'].strip())
-        todos.append(new_todo)
-        todo_counter += 1
+        new_todo = Todo(text=data['text'].strip())
+        db.session.add(new_todo)
+        db.session.commit()
         
         return jsonify({
             'success': True,
@@ -77,6 +83,7 @@ def create_todo():
         
     except Exception as e:
         app.logger.error(f"Error creating todo: {str(e)}")
+        db.session.rollback()
         return jsonify({
             'success': False,
             'error': 'Failed to create todo'
@@ -86,9 +93,10 @@ def create_todo():
 def update_todo(todo_id):
     """Update a todo (toggle completion status)"""
     try:
+        from models import Todo
         data = request.get_json()
         
-        todo = next((t for t in todos if t.id == todo_id), None)
+        todo = Todo.query.get(todo_id)
         if not todo:
             return jsonify({
                 'success': False,
@@ -101,6 +109,8 @@ def update_todo(todo_id):
         if 'text' in data and data['text'].strip():
             todo.text = data['text'].strip()
         
+        db.session.commit()
+        
         return jsonify({
             'success': True,
             'todo': todo.to_dict()
@@ -108,6 +118,7 @@ def update_todo(todo_id):
         
     except Exception as e:
         app.logger.error(f"Error updating todo {todo_id}: {str(e)}")
+        db.session.rollback()
         return jsonify({
             'success': False,
             'error': 'Failed to update todo'
@@ -117,8 +128,8 @@ def update_todo(todo_id):
 def delete_todo(todo_id):
     """Delete a todo"""
     try:
-        global todos
-        todo = next((t for t in todos if t.id == todo_id), None)
+        from models import Todo
+        todo = Todo.query.get(todo_id)
         
         if not todo:
             return jsonify({
@@ -126,7 +137,8 @@ def delete_todo(todo_id):
                 'error': 'Todo not found'
             }), 404
         
-        todos = [t for t in todos if t.id != todo_id]
+        db.session.delete(todo)
+        db.session.commit()
         
         return jsonify({
             'success': True,
@@ -135,6 +147,7 @@ def delete_todo(todo_id):
         
     except Exception as e:
         app.logger.error(f"Error deleting todo {todo_id}: {str(e)}")
+        db.session.rollback()
         return jsonify({
             'success': False,
             'error': 'Failed to delete todo'
