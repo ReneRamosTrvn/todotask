@@ -32,9 +32,28 @@ db.init_app(app)
 # Enable CORS for API endpoints
 CORS(app)
 
-# Import models and create tables
+# Define the Todo model directly here
+class Todo(db.Model):
+    __tablename__ = 'todos'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    text = db.Column(db.String(255), nullable=False)
+    completed = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: __import__('datetime').datetime.utcnow(), nullable=False)
+    
+    def __repr__(self):
+        return f'<Todo {self.id}: {self.text}>'
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'text': self.text,
+            'completed': self.completed,
+            'created_at': self.created_at.isoformat()
+        }
+
+# Create tables
 with app.app_context():
-    from models import Todo
     db.create_all()
 
 @app.route('/')
@@ -46,7 +65,6 @@ def index():
 def get_todos():
     """Get all todos"""
     try:
-        from models import Todo
         todos = Todo.query.order_by(Todo.created_at.desc()).all()
         return jsonify({
             'success': True,
@@ -63,7 +81,6 @@ def get_todos():
 def create_todo():
     """Create a new todo"""
     try:
-        from models import Todo
         data = request.get_json()
         
         if not data or not data.get('text', '').strip():
@@ -93,7 +110,6 @@ def create_todo():
 def update_todo(todo_id):
     """Update a todo (toggle completion status)"""
     try:
-        from models import Todo
         data = request.get_json()
         
         todo = Todo.query.get(todo_id)
@@ -128,7 +144,6 @@ def update_todo(todo_id):
 def delete_todo(todo_id):
     """Delete a todo"""
     try:
-        from models import Todo
         todo = Todo.query.get(todo_id)
         
         if not todo:
@@ -157,10 +172,13 @@ def delete_todo(todo_id):
 def clear_completed():
     """Clear all completed todos"""
     try:
-        global todos
-        initial_count = len(todos)
-        todos = [t for t in todos if not t.completed]
-        cleared_count = initial_count - len(todos)
+        completed_todos = Todo.query.filter_by(completed=True).all()
+        cleared_count = len(completed_todos)
+        
+        for todo in completed_todos:
+            db.session.delete(todo)
+        
+        db.session.commit()
         
         return jsonify({
             'success': True,
@@ -169,6 +187,7 @@ def clear_completed():
         
     except Exception as e:
         app.logger.error(f"Error clearing completed todos: {str(e)}")
+        db.session.rollback()
         return jsonify({
             'success': False,
             'error': 'Failed to clear completed todos'
